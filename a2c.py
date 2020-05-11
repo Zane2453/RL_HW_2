@@ -71,7 +71,7 @@ class Policy(nn.Module):
         return action_prob, state_value
 
 
-    def select_action(self, state):
+    def select_action(self, state, next=False):
         """
             Select the action given the current state
             - The input is the state, and the output is the action to apply 
@@ -82,7 +82,7 @@ class Policy(nn.Module):
         
         ########## YOUR CODE HERE (3~5 lines) ##########
         state = torch.from_numpy(state).float()
-        probs, state_value = self(state)
+        probs, state_value = self.forward(state)
 
         # create a categorical distribution over the list of probabilities of actions
         m = Categorical(probs)
@@ -92,12 +92,15 @@ class Policy(nn.Module):
         ########## END OF YOUR CODE ##########
         
         # save to action buffer
-        self.saved_actions.append(SavedAction(m.log_prob(action), state_value))
+        if next:
+            self.saved_actions.append(SavedAction(0, state_value))
+        else:
+            self.saved_actions.append(SavedAction(m.log_prob(action), state_value))
 
         return action.item()
 
 
-    def calculate_loss(self, gamma=0.99, eps=1e-9):
+    def calculate_loss(self, reward, done, gamma=0.99):
         """
             Calculate the loss (= policy loss + value loss) to perform backprop later
             TODO:
@@ -108,30 +111,24 @@ class Policy(nn.Module):
         
         # Initialize the lists and variables
         saved_actions = self.saved_actions
-        policy_losses = [] 
-        value_losses = [] 
-        returns = []
+        loss=0
+        critic_loss=0
+        advantage=0
 
         ########## YOUR CODE HERE (8-15 lines) ##########
-        # calculate the discounted reward using rewards returned from the environment
-        for start in range(len(self.rewards)):
-            R = 0
-            for index, r in enumerate(self.rewards[start: ]):
-                R = R + r * (gamma ** index)
-            returns.append(R)
+        index = 0
+        for (prob, value), in zip(saved_actions):
+            if index == 0:
+                log_prob = prob
+                state_value = value
+            else:
+                next_state_value = value
+            index += 1
 
-        returns = torch.tensor(returns)
-        returns = (returns - returns.mean()) / (returns.std() + eps)
-
-        for (log_prob, value), R in zip(saved_actions, returns):
-            # calculate policy loss 
-            policy_losses.append(-log_prob * (R - value.item()))
-
-            # calculate value loss using L1 smooth loss
-            value_losses.append(F.smooth_l1_loss(value, torch.tensor([R])))
-
-        # sum up all the values of policy_losses and value_losses
-        loss = torch.stack(policy_losses).sum() + torch.stack(value_losses).sum()
+        advantage = reward + (1 - done) * (gamma * next_state_value) - state_value
+        critic_loss = advantage.pow(2).mean()
+        actor_loss = -log_prob * advantage.detach()
+        loss = actor_loss + critic_loss
         ########## END OF YOUR CODE ##########
         
         return loss
@@ -176,24 +173,25 @@ def train(lr=0.01):
         for _ in range(1, 10000):
             action = model.select_action(state)
             next_state, reward, done, _ = env.step(action)
+            temp = model.select_action(state, True)
             model.rewards.append(reward)
             ep_reward += reward
+            loss = model.calculate_loss(reward, done)
+
+            # reset gradients
+            optimizer.zero_grad()
+
+            # perform backprop
+            loss.backward()
+            optimizer.step()
+            
+            # reset rewards and action buffer
+            model.clear_memory()
             if done:
                 break
             t += 1
             state = next_state
-        
-        loss = model.calculate_loss()
 
-        # reset gradients
-        optimizer.zero_grad()
-
-        # perform backprop
-        loss.backward()
-        optimizer.step()
-
-        # reset rewards and action buffer
-        model.clear_memory()
         ########## END OF YOUR CODE ##########
             
         # update EWMA reward and log the results
@@ -202,7 +200,7 @@ def train(lr=0.01):
 
         # check if we have "solved" the cart pole problem
         if ewma_reward > env.spec.reward_threshold:
-            torch.save(model.state_dict(), './preTrained/CartPole_{}.pth'.format(lr))
+            torch.save(model.state_dict(), './preTrained/LunarLander_{}.pth'.format(lr))
             print("Solved! Running reward is now {} and "
                   "the last episode runs to {} time steps!".format(ewma_reward, t))
             break
@@ -236,7 +234,7 @@ def test(name, n_episodes=10):
 if __name__ == '__main__':
     # For reproducibility, fix the random seed
     random_seed = 20  
-    lr = 0.01
+    lr = 0.001  # change the learning rate
     env = gym.make('LunarLander-v2')
     env.seed(random_seed)  
     torch.manual_seed(random_seed)  

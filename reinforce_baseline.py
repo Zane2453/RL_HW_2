@@ -82,7 +82,7 @@ class Policy(nn.Module):
         
         ########## YOUR CODE HERE (3~5 lines) ##########
         state = torch.from_numpy(state).float()
-        probs, state_value = self(state)
+        probs, state_value = self.forward(state)
 
         # create a categorical distribution over the list of probabilities of actions
         m = Categorical(probs)
