@@ -44,7 +44,6 @@ class Policy(nn.Module):
 
         # critic's layer
         self.value_net = nn.Linear(self.hidden_size, 1)
-        
         ########## END OF YOUR CODE ##########
         
         # action & reward memory
